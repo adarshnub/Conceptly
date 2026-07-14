@@ -1,0 +1,214 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #faf8f2;
+  --paper: #f0eee7;
+  --surface: #ffffff;
+  --ink: #172033;
+  --muted: #647084;
+  --line: #ddd8cc;
+  --indigo: #3949ab;
+  --indigo-dark: #26378d;
+  --green: #1f8a5b;
+  --red: #c2413a;
+  --amber: #f4c95d;
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  background:
+    linear-gradient(90deg, rgba(23, 32, 51, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 32, 51, 0.035) 1px, transparent 1px),
+    var(--bg);
+  background-size: 32px 32px;
+  color: var(--ink);
+  font-family: var(--font-geist-sans), sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  outline-color: var(--indigo);
+}
+
+.primary-button,
+.secondary-button,
+.nav-pill,
+.icon-pill {
+  min-height: 44px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.primary-button {
+  background: var(--indigo);
+  color: white;
+  padding: 0.75rem 1rem;
+}
+
+.primary-button:hover {
+  background: var(--indigo-dark);
+  transform: translateY(-1px);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.icon-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.secondary-button,
+.nav-pill,
+.icon-pill {
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink);
+  padding: 0.75rem 1rem;
+}
+
+.icon-pill {
+  width: 44px;
+  padding: 0;
+}
+
+.secondary-button:hover,
+.nav-pill:hover,
+.icon-pill:hover {
+  border-color: #b9b1a1;
+  transform: translateY(-1px);
+}
+
+.hero-scene {
+  min-height: min(760px, 92vh);
+  border-bottom: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 18% 12%, rgba(244, 201, 93, 0.22), transparent 24%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(250, 248, 242, 0.72));
+}
+
+.course-instrument,
+.feature-card,
+.lesson-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 24px 70px rgba(23, 32, 51, 0.08);
+}
+
+.chapter-preview {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr;
+  gap: 1rem;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 1rem;
+}
+
+.feature-card {
+  padding: 1.25rem;
+}
+
+.field-label {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.field-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 0.8rem 0.9rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.field-input:focus {
+  border-color: var(--indigo);
+  box-shadow: 0 0 0 3px rgba(57, 73, 171, 0.14);
+}
+
+.lesson-shell {
+  width: 100%;
+  margin: 0 auto;
+  max-width: 900px;
+}
+
+.lesson-card {
+  padding: clamp(1rem, 3vw, 2rem);
+}
+
+.answer-option {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 0.95rem 1rem;
+  text-align: left;
+  font-weight: 700;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.answer-option:hover {
+  border-color: #b9b1a1;
+  transform: translateY(-1px);
+}
+
+.answer-option-selected {
+  border-color: var(--indigo);
+  box-shadow: 0 0 0 3px rgba(57, 73, 171, 0.12);
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
+}
