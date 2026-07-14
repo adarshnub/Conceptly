@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +12,8 @@ import {
   ChevronUp,
   Loader2,
   Sparkles,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import type { ClientLessonStep, Feedback } from "@/lib/content/types";
@@ -51,8 +53,51 @@ export function LessonPlayer({
   const [result, setResult] = useState<AttemptResult | null>(null);
   const [coach, setCoach] = useState<Coach | null>(null);
   const [error, setError] = useState("");
+  const [voiceSupported] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      "speechSynthesis" in window &&
+      "SpeechSynthesisUtterance" in window,
+  );
+  const [autoRead, setAutoRead] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      localStorage.getItem("conceptly:auto-read") === "true",
+  );
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPending, startTransition] = useTransition();
   const progress = Math.round((stepNumber / totalSteps) * 100);
+  const questionSpeech = useMemo(() => getQuestionSpeech(step), [step]);
+
+  const speak = useCallback((text: string) => {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.94;
+    utterance.pitch = 1;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const stopSpeaking = useCallback(() => {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (voiceSupported) window.speechSynthesis.cancel();
+    };
+  }, [voiceSupported]);
+
+  useEffect(() => {
+    if (voiceSupported && autoRead) {
+      speak(questionSpeech);
+    }
+  }, [autoRead, questionSpeech, speak, step.id, voiceSupported]);
 
   function submit() {
     setError("");
@@ -75,6 +120,9 @@ export function LessonPlayer({
 
       const payload = (await response.json()) as AttemptResult;
       setResult(payload);
+      if (autoRead && !payload.tutorTrigger) {
+        speak(getResultSpeech(payload));
+      }
 
       if (payload.tutorTrigger) {
         const coachResponse = await fetch(
@@ -82,7 +130,11 @@ export function LessonPlayer({
           { method: "POST" },
         );
         if (coachResponse.ok) {
-          setCoach((await coachResponse.json()) as Coach);
+          const coachPayload = (await coachResponse.json()) as Coach;
+          setCoach(coachPayload);
+          if (autoRead) {
+            speak(`${getResultSpeech(payload)} Conceptly Coach cue. ${coachPayload.explanation} ${coachPayload.guidingQuestion}`);
+          }
         }
       }
     });
@@ -92,7 +144,7 @@ export function LessonPlayer({
 
   return (
     <section className="lesson-shell">
-      <div className="mb-6 flex items-center justify-between gap-3">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <Link className="icon-pill" href={courseHref} aria-label="Exit lesson">
           <X size={18} />
         </Link>
@@ -105,6 +157,41 @@ export function LessonPlayer({
         <span className="text-sm font-semibold text-[var(--muted)]">
           {stepNumber}/{totalSteps}
         </span>
+        {voiceSupported ? (
+          <div className="voice-strip" aria-label="Voice controls">
+            <button
+              className="voice-button"
+              onClick={() => speak(questionSpeech)}
+              type="button"
+            >
+              <Volume2 size={17} />
+              Read
+            </button>
+            <button
+              className="voice-icon"
+              onClick={stopSpeaking}
+              disabled={!isSpeaking}
+              type="button"
+              aria-label="Stop voice"
+            >
+              <VolumeX size={17} />
+            </button>
+            <label className="voice-toggle">
+              <input
+                type="checkbox"
+                checked={autoRead}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setAutoRead(enabled);
+                  localStorage.setItem("conceptly:auto-read", String(enabled));
+                  if (enabled) speak(questionSpeech);
+                  else stopSpeaking();
+                }}
+              />
+              Auto
+            </label>
+          </div>
+        ) : null}
       </div>
 
       <div className="lesson-card">
@@ -146,6 +233,44 @@ export function LessonPlayer({
       </div>
     </section>
   );
+}
+
+function getQuestionSpeech(step: ClientLessonStep) {
+  const pieces = [
+    `Step ${step.order}. ${step.title}.`,
+    step.prompt.stem,
+    step.prompt.instruction,
+  ];
+  const choices = step.prompt.choices ?? step.prompt.items ?? [];
+  if (choices.length > 0) {
+    pieces.push(
+      `Options. ${choices
+        .map((choice, index) => `${index + 1}. ${choice.label}`)
+        .join(". ")}.`,
+    );
+  }
+  if (step.prompt.targets?.length) {
+    pieces.push(
+      `Match targets. ${step.prompt.targets
+        .map((target) => target.label)
+        .join(". ")}.`,
+    );
+  }
+  if (step.prompt.starter && (step.kind === "markdown_editor" || step.kind === "json_debugger")) {
+    pieces.push(`Starter text. ${step.prompt.starter}`);
+  }
+  return pieces.filter(Boolean).join(" ");
+}
+
+function getResultSpeech(result: AttemptResult) {
+  if (result.correct) {
+    const xp = result.progress.xpAwarded
+      ? `You earned ${result.progress.xpAwarded} XP.`
+      : "";
+    return `Correct. Nice work. ${result.feedback.title}. ${result.feedback.body} ${xp}`;
+  }
+
+  return `Not quite yet. ${result.feedback.title}. Here is the cue. ${result.feedback.body}`;
 }
 
 function defaultAnswer(step: ClientLessonStep): unknown {
