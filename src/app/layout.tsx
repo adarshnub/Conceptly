@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Conceptly",
-  description: "Interactive AI foundations for adult beginners.",
+  title: "Conceptly — Learn AI by doing",
+  description:
+    "Narrated AI classes, interactive challenges, precise feedback, and contextual coaching for adult beginners.",
 };
 
 export default function RootLayout({

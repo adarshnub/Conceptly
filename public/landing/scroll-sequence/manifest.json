@@ -1,0 +1,7 @@
+{
+  "available": true,
+  "frameCount": 144,
+  "pattern": "/landing/scroll-sequence/frame-{frame}.webp",
+  "width": 960,
+  "height": 720
+}
