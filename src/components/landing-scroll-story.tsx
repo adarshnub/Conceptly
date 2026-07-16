@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioLines, Braces, CheckCircle2, MousePointer2, Sparkles } from "lucide-react";
 import { LandingCore } from "@/components/landing-core";
+import sequenceManifest from "../../public/landing/scroll-sequence/manifest.json";
 
 type SequenceManifest = {
   available: boolean;
@@ -11,6 +12,8 @@ type SequenceManifest = {
   width: number;
   height: number;
 };
+
+const ACTIVE_SEQUENCE: SequenceManifest = sequenceManifest;
 
 const STORY_STEPS = [
   {
@@ -44,20 +47,7 @@ export function LandingScrollStory() {
   const progressRef = useRef(0);
   const drawFrameRef = useRef<((progress: number) => void) | null>(null);
   const [activeStep, setActiveStep] = useState(0);
-  const [manifest, setManifest] = useState<SequenceManifest | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    fetch("/landing/scroll-sequence/manifest.json", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() as Promise<SequenceManifest> : null)
-      .then((value) => {
-        if (active && value) setManifest(value);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
+  const manifest = ACTIVE_SEQUENCE;
 
   useEffect(() => {
     let frame = 0;
@@ -156,6 +146,10 @@ function FrameSequenceCanvas({
   useEffect(() => {
     const cache = cacheRef.current;
     let disposed = false;
+    let animationFrame = 0;
+    let currentProgress = lastProgressRef.current;
+    let targetProgress = lastProgressRef.current;
+    let previousTime = 0;
 
     const pathFor = (frame: number) => manifest.pattern.replace(
       "{frame}",
@@ -182,41 +176,83 @@ function FrameSequenceCanvas({
       context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
     };
 
-    const load = (frame: number, shouldPaint = false) => {
-      const bounded = Math.min(manifest.frameCount - 1, Math.max(0, frame));
-      const cached = cache.get(bounded);
-      if (cached) {
-        if (shouldPaint && cached.complete) paint(cached);
-        return;
+    const paintFrame = (frame: number) => {
+      const image = cache.get(frame);
+      if (!image?.complete || image.naturalWidth === 0) return false;
+      paint(image);
+      return true;
+    };
+
+    const paintClosestLoadedFrame = (frame: number) => {
+      if (paintFrame(frame)) return;
+      for (let offset = 1; offset < manifest.frameCount; offset += 1) {
+        if (paintFrame(frame - offset) || paintFrame(frame + offset)) return;
       }
+    };
+
+    const load = (frame: number) => {
       const image = new window.Image();
       image.decoding = "async";
-      image.src = pathFor(bounded);
+      image.fetchPriority = frame === 0 || frame % 36 === 0 ? "high" : "auto";
       image.onload = () => {
-        if (!disposed && shouldPaint) paint(image);
+        if (disposed) return;
+        const requestedFrame = Math.round(targetProgress * (manifest.frameCount - 1));
+        if (frame === 0 || Math.abs(requestedFrame - frame) <= 1) paint(image);
       };
-      cache.set(bounded, image);
+      image.src = pathFor(frame);
+      cache.set(frame, image);
+    };
+
+    const scrub = (timestamp: number) => {
+      if (disposed) return;
+      const elapsed = previousTime ? Math.min(64, timestamp - previousTime) : 16;
+      previousTime = timestamp;
+      const response = 1 - Math.exp(-elapsed / 54);
+      currentProgress += (targetProgress - currentProgress) * response;
+
+      if (Math.abs(targetProgress - currentProgress) < 0.00012) {
+        currentProgress = targetProgress;
+      }
+      const frame = Math.round(currentProgress * (manifest.frameCount - 1));
+      paintClosestLoadedFrame(frame);
+
+      if (currentProgress !== targetProgress) {
+        animationFrame = requestAnimationFrame(scrub);
+      } else {
+        animationFrame = 0;
+        previousTime = 0;
+      }
     };
 
     const draw = (progress: number) => {
-      lastProgressRef.current = progress;
-      const frame = Math.round(progress * (manifest.frameCount - 1));
-      load(frame, true);
-      for (let offset = 1; offset <= 5; offset += 1) {
-        load(frame + offset);
-        load(frame - offset);
-      }
+      targetProgress = Math.min(1, Math.max(0, progress));
+      lastProgressRef.current = targetProgress;
+      if (!animationFrame) animationFrame = requestAnimationFrame(scrub);
     };
 
-    const resizeObserver = new ResizeObserver(() => draw(lastProgressRef.current));
+    const keyFrames = [0, Math.floor(manifest.frameCount * 0.25), Math.floor(manifest.frameCount * 0.5), Math.floor(manifest.frameCount * 0.75), manifest.frameCount - 1];
+    const preloadOrder = [
+      ...keyFrames,
+      ...Array.from({ length: manifest.frameCount }, (_, frame) => frame).filter((frame) => !keyFrames.includes(frame)),
+    ];
+    preloadOrder.forEach(load);
+
+    const resizeObserver = new ResizeObserver(() => {
+      const frame = Math.round(currentProgress * (manifest.frameCount - 1));
+      paintClosestLoadedFrame(frame);
+    });
     if (canvasRef.current) resizeObserver.observe(canvasRef.current);
     registerRenderer(draw);
     draw(0);
 
     return () => {
       disposed = true;
+      cancelAnimationFrame(animationFrame);
       registerRenderer(null);
       resizeObserver.disconnect();
+      cache.forEach((image) => {
+        image.onload = null;
+      });
       cache.clear();
     };
   }, [manifest, registerRenderer]);
