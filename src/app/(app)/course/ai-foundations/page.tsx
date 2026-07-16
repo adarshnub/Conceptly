@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Check, Lock, Play, RotateCcw } from "lucide-react";
+import { Check, GraduationCap, Lock, Play, RotateCcw, Unlock } from "lucide-react";
 import { getLearningSnapshot } from "@/lib/learning";
 import { requireUser } from "@/lib/session";
 
@@ -19,21 +19,55 @@ export default async function CourseMapPage() {
         <p className="mt-4 max-w-2xl text-lg leading-8 text-[var(--muted)]">
           Twenty ordered steps across the two default chapters. Completed steps can be replayed without duplicate XP.
         </p>
+        {snapshot.profile.unlock_all ? (
+          <div className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-4 text-sm font-semibold text-emerald-800">
+            <Unlock size={16} />
+            All lessons are unlocked for your account
+          </div>
+        ) : null}
       </section>
 
       <div className="grid gap-8">
         {snapshot.course.chapters.map((chapter) => (
           <section className="course-instrument p-5" key={chapter.id}>
-            <div className="mb-5">
-              <p className="text-sm font-semibold text-[var(--indigo)]">Chapter {chapter.order}</p>
-              <h2 className="text-2xl font-semibold">{chapter.title}</h2>
-              <p className="mt-2 leading-7 text-[var(--muted)]">{chapter.description}</p>
+            <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-[var(--indigo)]">Chapter {chapter.order}</p>
+                <h2 className="text-2xl font-semibold">{chapter.title}</h2>
+                <p className="mt-2 leading-7 text-[var(--muted)]">{chapter.description}</p>
+              </div>
+              {(() => {
+                const chapterSteps = snapshot.steps.filter(
+                  (item) => item.step.chapterSlug === chapter.slug,
+                );
+                const chapterUnlocked = chapterSteps.some(
+                  (item) => item.status !== "locked",
+                );
+
+                return chapterUnlocked ? (
+                  <Link
+                    className="secondary-button"
+                    href={`/learn/ai-foundations/${chapter.slug}/class`}
+                  >
+                    <GraduationCap size={18} />
+                    Class session
+                  </Link>
+                ) : (
+                  <button className="secondary-button opacity-60" disabled type="button">
+                    <Lock size={18} />
+                    Class locked
+                  </button>
+                );
+              })()}
             </div>
             <div className="grid gap-3">
               {snapshot.steps
                 .filter((item) => item.step.chapterSlug === chapter.slug)
                 .map((item, index) => {
-                  const href = `/learn/ai-foundations/${item.step.chapterSlug}/${item.step.slug}`;
+                  const href =
+                    index === 0 && item.status !== "completed"
+                      ? `/learn/ai-foundations/${item.step.chapterSlug}/class`
+                      : `/learn/ai-foundations/${item.step.chapterSlug}/${item.step.slug}`;
                   const icon =
                     item.status === "completed" ? (
                       <Check size={18} />

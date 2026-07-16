@@ -1,0 +1,32 @@
+{
+  "generatedAt": "2026-07-16T05:29:30.795Z",
+  "model": "gpt-4o-mini-tts",
+  "voice": "cedar",
+  "entries": {
+    "task-shapes": {
+      "hash": "30f06712c75996e3e57e7f2f4c13fc9d78b646f726d8ae29b7b1930ecac9535e",
+      "file": "task-shapes.mp3",
+      "usageLogged": true
+    },
+    "training-usage": {
+      "hash": "6351038dc63316b15a941ef8e448991aaf1edaa51f7664d62d10f39acf350d4b",
+      "file": "training-usage.mp3",
+      "usageLogged": true
+    },
+    "tokens-context": {
+      "hash": "a7fe4fee1cc0492b45533499523b1852e20e95ea480de868010ff5092aecaf6e",
+      "file": "tokens-context.mp3",
+      "usageLogged": true
+    },
+    "prompt-parts": {
+      "hash": "d60ca690aac4debc0a0bf90ac8b0493f073b9db48ce28932d740d899f5ea6c42",
+      "file": "prompt-parts.mp3",
+      "usageLogged": true
+    },
+    "evidence": {
+      "hash": "88c56f890e519fa67006db2d11b837b98f09aa848c8c7fdcb8cee029531aeab6",
+      "file": "evidence.mp3",
+      "usageLogged": true
+    }
+  }
+}

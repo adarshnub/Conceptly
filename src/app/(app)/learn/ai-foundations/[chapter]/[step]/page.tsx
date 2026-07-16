@@ -14,7 +14,10 @@ export default async function LessonPage({ params }: { params: Params }) {
   if (!step) notFound();
 
   const snapshot = await getLearningSnapshot(session.user.id);
-  if (!isStepUnlocked(step, snapshot.completed) && !snapshot.completed.has(step.id)) {
+  if (
+    !isStepUnlocked(step, snapshot.completed, snapshot.profile.unlock_all) &&
+    !snapshot.completed.has(step.id)
+  ) {
     redirect("/course/ai-foundations");
   }
 
@@ -26,7 +29,13 @@ export default async function LessonPage({ params }: { params: Params }) {
       step={toClientStep(step)}
       stepNumber={index + 1}
       totalSteps={allSteps.length}
-      nextHref={next ? `/learn/ai-foundations/${next.chapterSlug}/${next.slug}` : null}
+      nextHref={
+        next
+          ? next.order === 1
+            ? `/learn/ai-foundations/${next.chapterSlug}/class`
+            : `/learn/ai-foundations/${next.chapterSlug}/${next.slug}`
+          : null
+      }
       courseHref="/course/ai-foundations"
     />
   );

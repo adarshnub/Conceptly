@@ -3,6 +3,7 @@ import {
   boolean,
   date,
   integer,
+  index,
   jsonb,
   pgEnum,
   pgSchema,
@@ -88,6 +89,7 @@ export const profiles = conceptly.table("profiles", {
     .references(() => user.id, { onDelete: "cascade" }),
   displayName: text("display_name").notNull(),
   timezone: text("timezone").notNull().default("UTC"),
+  unlockAll: boolean("unlock_all").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -245,7 +247,35 @@ export const tutorInterventions = conceptly.table(
   ],
 );
 
+export const aiUsageEvents = conceptly.table(
+  "ai_usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    feature: text("feature").notNull(),
+    status: text("status").notNull(),
+    model: text("model").notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    inputCharacters: integer("input_characters").notNull().default(0),
+    audioSeconds: integer("audio_seconds").notNull().default(0),
+    estimatedCostMicrousd: integer("estimated_cost_micro_usd"),
+    latencyMs: integer("latency_ms"),
+    requestId: text("request_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ai_usage_user_created_idx").on(table.userId, table.createdAt),
+    index("ai_usage_feature_created_idx").on(table.feature, table.createdAt),
+  ],
+);
+
 export const userRelations = relations(user, ({ one, many }) => ({
   profile: one(profiles),
   sessions: many(session),
+  aiUsageEvents: many(aiUsageEvents),
 }));

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpen, Compass, Settings } from "lucide-react";
+import { BookOpen, Compass, Gauge, Settings } from "lucide-react";
 
 export function AppShell({
   children,
@@ -26,6 +26,9 @@ export function AppShell({
             <Link className="nav-pill hidden sm:flex" href="/course/ai-foundations">
               <BookOpen size={17} />
               Course
+            </Link>
+            <Link className="icon-pill" href="/settings/ai-usage" aria-label="AI usage and cost">
+              <Gauge size={18} />
             </Link>
             <Link className="icon-pill" href="/settings" aria-label={`Settings for ${displayName}`}>
               <Settings size={18} />

@@ -1,4 +1,5 @@
-import { Clock, Mail, Shield } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, Clock, Gauge, Mail, Shield } from "lucide-react";
 import { SignOutButton } from "@/components/sign-out-button";
 import { getLearningSnapshot } from "@/lib/learning";
 import { requireUser } from "@/lib/session";
@@ -27,6 +28,12 @@ export default async function SettingsPage() {
           <SignOutButton />
         </div>
       </section>
+
+      <Link className="settings-usage-link" href="/settings/ai-usage">
+        <span className="settings-usage-icon"><Gauge size={22} /></span>
+        <span><strong>AI usage and cost</strong><small>Monitor tokens, generated voice, requests, and estimated spend.</small></span>
+        <ArrowRight size={20} />
+      </Link>
     </div>
   );
 }

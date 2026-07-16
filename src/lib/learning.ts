@@ -42,7 +42,12 @@ function previousLocalDate(dateString: string) {
   return date.toISOString().slice(0, 10);
 }
 
-export function isStepUnlocked(step: LessonStep, completed: Set<string>) {
+export function isStepUnlocked(
+  step: LessonStep,
+  completed: Set<string>,
+  unlockAll = false,
+) {
+  if (unlockAll) return true;
   const previous = getPreviousStep(step.id);
   return !previous || completed.has(previous.id);
 }
@@ -97,8 +102,8 @@ export async function getLearningSnapshot(userId: string) {
        where user_id = $1`,
       [userId],
     ),
-    pool.query<{ display_name: string; timezone: string }>(
-      `select display_name, timezone
+    pool.query<{ display_name: string; timezone: string; unlock_all: boolean }>(
+      `select display_name, timezone, unlock_all
        from conceptly_private.profiles
        where user_id = $1`,
       [userId],
@@ -116,6 +121,11 @@ export async function getLearningSnapshot(userId: string) {
       .filter((row) => row.status === "completed")
       .map((row) => row.step_id),
   );
+  const currentProfile = profile.rows[0] ?? {
+    display_name: "Learner",
+    timezone: "UTC",
+    unlock_all: false,
+  };
 
   return {
     course: getCourse(),
@@ -123,7 +133,7 @@ export async function getLearningSnapshot(userId: string) {
       const existing = progressMap.get(step.id);
       const status = completed.has(step.id)
         ? "completed"
-        : isStepUnlocked(step, completed)
+        : isStepUnlocked(step, completed, currentProfile.unlock_all)
           ? "available"
           : "locked";
       return {
@@ -139,7 +149,7 @@ export async function getLearningSnapshot(userId: string) {
       longest_streak: 0,
       last_qualifying_date: null,
     },
-    profile: profile.rows[0] ?? { display_name: "Learner", timezone: "UTC" },
+    profile: currentProfile,
     completed,
   };
 }
@@ -232,8 +242,8 @@ export async function recordAttempt(
     await client.query("begin");
     await ensureLearningRowsWithExecutor(client, userId);
 
-    const profile = await client.query<{ timezone: string }>(
-      `select timezone from conceptly_private.profiles where user_id = $1 for update`,
+    const profile = await client.query<{ timezone: string; unlock_all: boolean }>(
+      `select timezone, unlock_all from conceptly_private.profiles where user_id = $1 for update`,
       [userId],
     );
     const timezone = profile.rows[0]?.timezone ?? "UTC";
@@ -246,7 +256,10 @@ export async function recordAttempt(
     );
     const completed = new Set(completedRows.rows.map((row) => row.step_id));
 
-    if (!isStepUnlocked(step, completed) && !completed.has(step.id)) {
+    if (
+      !isStepUnlocked(step, completed, profile.rows[0]?.unlock_all ?? false) &&
+      !completed.has(step.id)
+    ) {
       throw Object.assign(new Error("This lesson step is locked."), { status: 409 });
     }
 

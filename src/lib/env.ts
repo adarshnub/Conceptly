@@ -11,6 +11,9 @@ const envSchema = z.object({
   BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-5.6-luna"),
+  OPENAI_TTS_MODEL: z.string().default("gpt-4o-mini-tts"),
+  OPENAI_TTS_VOICE: z.string().default("cedar"),
+  OPENAI_TTS_USD_PER_MINUTE: z.coerce.number().nonnegative().default(0.015),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   NEXT_PUBLIC_APP_URL: optionalUrl,
 });
@@ -34,6 +37,9 @@ export function getEnv() {
       BETTER_AUTH_URL: "http://localhost:3000",
       OPENAI_API_KEY: undefined,
       OPENAI_MODEL: "gpt-5.6-luna",
+      OPENAI_TTS_MODEL: "gpt-4o-mini-tts",
+      OPENAI_TTS_VOICE: "cedar",
+      OPENAI_TTS_USD_PER_MINUTE: 0.015,
       NODE_ENV: "development" as const,
       NEXT_PUBLIC_APP_URL: "",
     };

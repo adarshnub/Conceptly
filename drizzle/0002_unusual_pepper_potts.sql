@@ -1,0 +1,1 @@
+ALTER TABLE "conceptly_private"."profiles" ADD COLUMN "unlock_all" boolean DEFAULT false NOT NULL;

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Flame, Trophy } from "lucide-react";
+import { ArrowRight, Flame, GraduationCap, Trophy } from "lucide-react";
 import { getLearningSnapshot } from "@/lib/learning";
 import { requireUser } from "@/lib/session";
 
@@ -40,7 +40,14 @@ export default async function LearnPage() {
             </h2>
           </div>
           {next ? (
-            <Link className="primary-button" href={`/learn/ai-foundations/${next.step.chapterSlug}/${next.step.slug}`}>
+            <Link
+              className="primary-button"
+              href={
+                next.step.order === 1
+                  ? `/learn/ai-foundations/${next.step.chapterSlug}/class`
+                  : `/learn/ai-foundations/${next.step.chapterSlug}/${next.step.slug}`
+              }
+            >
               Resume
               <ArrowRight size={18} />
             </Link>
@@ -70,10 +77,23 @@ export default async function LearnPage() {
               <h2 className="mt-2 text-2xl font-semibold">{chapter.title}</h2>
               <p className="mt-3 leading-7 text-[var(--muted)]">{chapter.description}</p>
               <p className="mt-5 text-sm font-semibold">{done}/10 complete</p>
-              <Link className={locked ? "secondary-button mt-5 opacity-60" : "secondary-button mt-5"} href="/course/ai-foundations">
-                {locked ? "Locked" : "Open map"}
-                <ArrowRight size={18} />
-              </Link>
+              <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+                {locked ? (
+                  <button className="secondary-button opacity-60" disabled type="button">
+                    Locked
+                    <ArrowRight size={18} />
+                  </button>
+                ) : (
+                  <Link className="primary-button" href={`/learn/ai-foundations/${chapter.slug}/class`}>
+                    <GraduationCap size={18} />
+                    Class
+                  </Link>
+                )}
+                <Link className={locked ? "secondary-button opacity-60" : "secondary-button"} href="/course/ai-foundations">
+                  Open map
+                  <ArrowRight size={18} />
+                </Link>
+              </div>
             </article>
           );
         })}

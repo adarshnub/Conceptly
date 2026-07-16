@@ -1,21 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  ArrowLeft,
   ArrowRight,
   Check,
   ChevronDown,
   ChevronUp,
+  Circle,
+  GripVertical,
+  Lightbulb,
   Loader2,
+  Minus,
+  Plus,
   Sparkles,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
+import { buildAudioEnvelope, VoiceOrb, type VoiceOrbTone } from "@/components/voice-orb";
 import type { ClientLessonStep, Feedback } from "@/lib/content/types";
 
 type AttemptResult = {
@@ -36,6 +41,9 @@ type Coach = {
   guidingQuestion: string;
 };
 
+type LiveCriterion = { label: string; met: boolean };
+type SpeechCue = { id: string; text: string };
+type SpeechPurpose = "question" | "feedback" | "coach";
 export function LessonPlayer({
   step,
   stepNumber,
@@ -53,53 +61,143 @@ export function LessonPlayer({
   const [result, setResult] = useState<AttemptResult | null>(null);
   const [coach, setCoach] = useState<Coach | null>(null);
   const [error, setError] = useState("");
-  const [voiceSupported] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      "speechSynthesis" in window &&
-      "SpeechSynthesisUtterance" in window,
-  );
+  const [voiceError, setVoiceError] = useState("");
   const [autoRead, setAutoRead] = useState(
     () =>
       typeof window !== "undefined" &&
       localStorage.getItem("conceptly:auto-read") === "true",
   );
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [activeSpeechCue, setActiveSpeechCue] = useState<string | null>(null);
+  const speechRunRef = useRef(0);
+  const speechAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speechRequestRef = useRef<AbortController | null>(null);
+  const speechAudioUrlsRef = useRef(new Map<string, string>());
+  const speechEnvelopesRef = useRef(new Map<string, number[]>());
+  const [voiceEnvelope, setVoiceEnvelope] = useState<number[]>([]);
   const [isPending, startTransition] = useTransition();
   const progress = Math.round((stepNumber / totalSteps) * 100);
-  const questionSpeech = useMemo(() => getQuestionSpeech(step), [step]);
+  const questionCues = useMemo(() => getQuestionCues(step), [step]);
+  const criteria = useMemo(() => getLiveCriteria(step, answer), [answer, step]);
+  const answerReady = criteria.every((criterion) => criterion.met);
 
-  const speak = useCallback((text: string) => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.94;
-    utterance.pitch = 1;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utterance);
-  }, []);
+  const speak = useCallback(async (cues: SpeechCue[], purpose: SpeechPurpose = "question") => {
+    const runId = ++speechRunRef.current;
+    speechRequestRef.current?.abort();
+    speechAudioRef.current?.pause();
+    const controller = new AbortController();
+    speechRequestRef.current = controller;
+    const narration = cues.map((cue) => cue.text).join(" ");
+    const cacheKey = `${step.id}:${purpose}:${narration}`;
+
+    try {
+      let audioUrl = speechAudioUrlsRef.current.get(cacheKey);
+      let envelope = speechEnvelopesRef.current.get(cacheKey) ?? [];
+      if (!audioUrl) {
+        const response = await fetch("/api/learning/speech", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ stepId: step.id, purpose, text: narration }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.error?.message ?? "OpenAI narration could not be generated.");
+        }
+        const audioBlob = await response.blob();
+        audioUrl = URL.createObjectURL(audioBlob);
+        speechAudioUrlsRef.current.set(cacheKey, audioUrl);
+        envelope = await buildAudioEnvelope(await audioBlob.arrayBuffer()).catch(() => []);
+        speechEnvelopesRef.current.set(cacheKey, envelope);
+      }
+
+      if (runId !== speechRunRef.current) return;
+      setVoiceEnvelope(envelope);
+      const audio = speechAudioRef.current;
+      if (!audio) throw new Error("The OpenAI audio player is not ready.");
+      const totalWeight = Math.max(1, cues.reduce((total, cue) => total + cue.text.length, 0));
+
+      audio.src = audioUrl;
+      audio.currentTime = 0;
+      audio.onplay = () => {
+        setVoiceError("");
+        setIsSpeaking(true);
+        setActiveSpeechCue(cues[0]?.id ?? null);
+      };
+      audio.ontimeupdate = () => {
+        if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+        const spokenWeight = (audio.currentTime / audio.duration) * totalWeight;
+        let cumulative = 0;
+        const activeCue = cues.find((cue) => {
+          cumulative += cue.text.length;
+          return spokenWeight <= cumulative;
+        });
+        setActiveSpeechCue(activeCue?.id ?? cues.at(-1)?.id ?? null);
+      };
+      audio.onended = () => {
+        setIsSpeaking(false);
+        setActiveSpeechCue(null);
+      };
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        setActiveSpeechCue(null);
+        setVoiceError("OpenAI audio could not play. Press Read question to retry.");
+      };
+      audio.load();
+      await audio.play();
+    } catch (speechError) {
+      if (controller.signal.aborted) return;
+      setIsSpeaking(false);
+      setActiveSpeechCue(null);
+      setVoiceError(
+        speechError instanceof Error
+          ? speechError.message
+          : "OpenAI narration is unavailable.",
+      );
+    }
+  }, [step.id]);
 
   const stopSpeaking = useCallback(() => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
+    speechRunRef.current += 1;
+    speechRequestRef.current?.abort();
+    speechAudioRef.current?.pause();
     setIsSpeaking(false);
+    setActiveSpeechCue(null);
   }, []);
 
   useEffect(() => {
+    const audio = speechAudioRef.current;
+    const urls = speechAudioUrlsRef.current;
     return () => {
-      if (voiceSupported) window.speechSynthesis.cancel();
+      speechRunRef.current += 1;
+      speechRequestRef.current?.abort();
+      audio?.pause();
+      urls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [voiceSupported]);
+  }, []);
 
   useEffect(() => {
-    if (voiceSupported && autoRead) {
-      speak(questionSpeech);
-    }
-  }, [autoRead, questionSpeech, speak, step.id, voiceSupported]);
+    if (!autoRead) return;
+    const timeout = window.setTimeout(() => {
+      void speak(questionCues, "question");
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [autoRead, questionCues, speak, step.id]);
 
-  function submit() {
+  function updateAnswer(next: unknown) {
+    setAnswer(next);
+    if (!result?.correct) {
+      setResult(null);
+      setCoach(null);
+      setError("");
+    }
+  }
+
+  function submit(answerToCheck: unknown) {
+    const submittedAnswerReady = getLiveCriteria(step, answerToCheck).every(
+      (criterion) => criterion.met,
+    );
+    if (!submittedAnswerReady) return;
     setError("");
     startTransition(async () => {
       const response = await fetch("/api/learning/attempts", {
@@ -108,7 +206,7 @@ export function LessonPlayer({
         body: JSON.stringify({
           stepId: step.id,
           clientAttemptId: crypto.randomUUID(),
-          answer,
+          answer: answerToCheck,
         }),
       });
 
@@ -120,9 +218,7 @@ export function LessonPlayer({
 
       const payload = (await response.json()) as AttemptResult;
       setResult(payload);
-      if (autoRead && !payload.tutorTrigger) {
-        speak(getResultSpeech(payload));
-      }
+      if (autoRead && !payload.tutorTrigger) void speak(getResultSpeechCues(payload), "feedback");
 
       if (payload.tutorTrigger) {
         const coachResponse = await fetch(
@@ -133,144 +229,281 @@ export function LessonPlayer({
           const coachPayload = (await coachResponse.json()) as Coach;
           setCoach(coachPayload);
           if (autoRead) {
-            speak(`${getResultSpeech(payload)} Conceptly Coach cue. ${coachPayload.explanation} ${coachPayload.guidingQuestion}`);
+            void speak([
+              ...getResultSpeechCues(payload),
+              { id: "coach-explanation", text: `Conceptly Coach cue. ${coachPayload.explanation}` },
+              { id: "coach-question", text: coachPayload.guidingQuestion },
+            ], "coach");
           }
         }
       }
     });
   }
 
-  const canContinue = result?.correct;
+  const continueHref = nextHref ?? "/learn";
+  const voiceOrbTone: VoiceOrbTone = coach
+    ? "coach"
+    : result?.correct
+      ? "success"
+      : result
+        ? "error"
+        : "neutral";
 
   return (
-    <section className="lesson-shell">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <Link className="icon-pill" href={courseHref} aria-label="Exit lesson">
-          <X size={18} />
+    <section className="lesson-experience">
+      <audio ref={speechAudioRef} preload="none" className="hidden" aria-hidden="true" />
+      <VoiceOrb
+        audioRef={speechAudioRef}
+        envelope={voiceEnvelope}
+        isSpeaking={isSpeaking}
+        tone={voiceOrbTone}
+      />
+      <header className="lesson-topbar">
+        <Link className="lesson-icon-button" href={courseHref} aria-label="Exit lesson">
+          <X size={21} />
         </Link>
-        <div className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--line)]">
-          <div
-            className="h-full rounded-full bg-[var(--indigo)] transition-all"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <span className="text-sm font-semibold text-[var(--muted)]">
-          {stepNumber}/{totalSteps}
-        </span>
-        {voiceSupported ? (
-          <div className="voice-strip" aria-label="Voice controls">
-            <button
-              className="voice-button"
-              onClick={() => speak(questionSpeech)}
-              type="button"
-            >
-              <Volume2 size={17} />
-              Read
-            </button>
-            <button
-              className="voice-icon"
-              onClick={stopSpeaking}
-              disabled={!isSpeaking}
-              type="button"
-              aria-label="Stop voice"
-            >
-              <VolumeX size={17} />
-            </button>
-            <label className="voice-toggle">
-              <input
-                type="checkbox"
-                checked={autoRead}
-                onChange={(event) => {
-                  const enabled = event.target.checked;
-                  setAutoRead(enabled);
-                  localStorage.setItem("conceptly:auto-read", String(enabled));
-                  if (enabled) speak(questionSpeech);
-                  else stopSpeaking();
-                }}
-              />
-              Auto
-            </label>
+        <div className="lesson-progress-wrap" aria-label={`${progress}% through the course`}>
+          <div className="lesson-progress-track">
+            <span style={{ width: `${progress}%` }} />
           </div>
-        ) : null}
-      </div>
+          <div className="lesson-progress-dots" aria-hidden="true">
+            {Array.from({ length: 4 }, (_, index) => (
+              <span key={index} className={progress >= (index + 1) * 25 ? "is-filled" : ""} />
+            ))}
+          </div>
+        </div>
+        <div className="lesson-step-count">
+          <strong>{stepNumber}</strong>
+          <span>/ {totalSteps}</span>
+        </div>
+      </header>
 
-      <div className="lesson-card">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--indigo)]">
-          {step.kind.replaceAll("_", " ")}
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold leading-tight sm:text-4xl">
-          {step.title}
-        </h1>
-        <p className="mt-5 text-lg leading-8 text-[var(--muted)]">{step.prompt.stem}</p>
-
-        <div className="mt-8">
-          <Renderer step={step} answer={answer} setAnswer={setAnswer} disabled={Boolean(result?.correct)} />
+      <div className={`lesson-stage ${result?.correct ? "is-correct" : result ? "is-wrong" : ""}`}>
+        <div className="lesson-stage-tools">
+          <span className="lesson-kind-pill">{kindLabel(step.kind)}</span>
+          <div className="lesson-voice-wrap">
+            <div className="lesson-voice-controls" aria-label="OpenAI voice controls">
+              <button onClick={() => void speak(questionCues, "question")} type="button">
+                <Volume2 size={17} />
+                OpenAI voice
+              </button>
+              <button
+                className="lesson-voice-icon"
+                onClick={stopSpeaking}
+                disabled={!isSpeaking}
+                type="button"
+                aria-label="Stop voice"
+              >
+                <VolumeX size={17} />
+              </button>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={autoRead}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    setAutoRead(enabled);
+                    localStorage.setItem("conceptly:auto-read", String(enabled));
+                    if (enabled) void speak(questionCues, "question");
+                    else stopSpeaking();
+                  }}
+                />
+                Auto
+              </label>
+            </div>
+            {voiceError ? <span className="lesson-voice-error" role="status">{voiceError}</span> : null}
+          </div>
         </div>
 
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <button className="primary-button" onClick={submit} disabled={isPending || Boolean(result?.correct)} type="button">
-            {isPending ? <Loader2 className="animate-spin" size={18} /> : <Check size={18} />}
-            Check answer
-          </button>
-          {canContinue && nextHref ? (
-            <Link className="secondary-button" href={nextHref}>
-              Continue
-              <ArrowRight size={18} />
-            </Link>
-          ) : canContinue ? (
-            <Link className="secondary-button" href="/learn">
-              Finish
-              <ArrowRight size={18} />
-            </Link>
-          ) : null}
-        </div>
+        <main className="lesson-workspace">
+          <div className="lesson-brief">
+            <p className="lesson-eyebrow">Interactive challenge</p>
+            <h1 className={activeSpeechCue === "title" ? "is-being-read" : ""}>{step.title}</h1>
+            <p className={activeSpeechCue === "stem" ? "is-being-read" : ""}>{step.prompt.stem}</p>
+            <div className={`lesson-instruction ${activeSpeechCue === "instruction" ? "is-being-read" : ""}`}>
+              <Lightbulb size={17} />
+              <span>{step.prompt.instruction}</span>
+            </div>
+            <div className="lesson-criteria" aria-label="Challenge checks">
+              {criteria.map((criterion) => (
+                <div className={criterion.met ? "is-met" : ""} key={criterion.label}>
+                  {criterion.met ? <Check size={16} /> : <Circle size={15} />}
+                  <span>{criterion.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
 
-        {error ? <FeedbackBox tone="error" feedback={{ code: "error", title: "Not checked", body: error }} /> : null}
-        {result ? (
-          <FeedbackBox tone={result.correct ? "success" : "error"} feedback={result.feedback} xp={result.progress.xpAwarded} />
-        ) : null}
-        {coach ? <CoachBox coach={coach} /> : null}
+          <div className="lesson-interaction-board">
+            <div className="lesson-board-heading">
+              <span>Working area</span>
+              <small>Changes appear instantly</small>
+            </div>
+            <Renderer
+              step={step}
+              answer={answer}
+              setAnswer={updateAnswer}
+              disabled={Boolean(result?.correct)}
+              onImmediateSubmit={submit}
+              busy={isPending}
+              activeSpeechCue={activeSpeechCue}
+            />
+          </div>
+        </main>
+
+        <footer className="lesson-action-bar">
+          <div className="lesson-feedback-slot" aria-live="polite">
+            {error ? (
+              <FeedbackBox
+                tone="error"
+                feedback={{ code: "error", title: "Not checked", body: error }}
+                activeSpeechCue={activeSpeechCue}
+              />
+            ) : result ? (
+              <FeedbackBox
+                tone={result.correct ? "success" : "error"}
+                feedback={result.feedback}
+                xp={result.progress.xpAwarded}
+                activeSpeechCue={activeSpeechCue}
+              />
+            ) : (
+              <p>Select or build your answer, then check it.</p>
+            )}
+            {coach ? <CoachBox coach={coach} activeSpeechCue={activeSpeechCue} /> : null}
+          </div>
+          <div className="lesson-primary-actions">
+            {result?.correct ? (
+              <Link className="lesson-continue-button" href={continueHref}>
+                {nextHref ? "Continue" : "Finish"}
+                <ArrowRight size={19} />
+              </Link>
+            ) : step.kind === "single_choice" ? (
+              <button className="lesson-check-button" disabled type="button">
+                {isPending ? <Loader2 className="animate-spin" size={19} /> : <Circle size={18} />}
+                {isPending ? "Checking…" : result ? "Choose another answer" : "Choose an answer"}
+              </button>
+            ) : (
+              <button
+                className="lesson-check-button"
+                onClick={() => submit(answer)}
+                disabled={isPending || !answerReady}
+                type="button"
+              >
+                {isPending ? <Loader2 className="animate-spin" size={19} /> : <Check size={19} />}
+                Check answer
+              </button>
+            )}
+          </div>
+        </footer>
       </div>
     </section>
   );
 }
 
-function getQuestionSpeech(step: ClientLessonStep) {
-  const pieces = [
-    `Step ${step.order}. ${step.title}.`,
-    step.prompt.stem,
-    step.prompt.instruction,
+function kindLabel(kind: ClientLessonStep["kind"]) {
+  return {
+    single_choice: "Choose",
+    multi_select: "Select",
+    ordering: "Arrange",
+    matching: "Connect",
+    token_budget: "Build",
+    markdown_editor: "Write",
+    json_debugger: "Debug",
+    prompt_builder: "Create",
+  }[kind];
+}
+
+function getLiveCriteria(step: ClientLessonStep, answer: unknown): LiveCriterion[] {
+  if (step.kind === "single_choice") {
+    return [{ label: "Choose one response", met: Boolean((answer as { selectedId?: string }).selectedId) }];
+  }
+
+  if (step.kind === "multi_select") {
+    const count = (answer as { selectedIds?: string[] }).selectedIds?.length ?? 0;
+    return [{ label: "Select every item that applies", met: count > 0 }];
+  }
+
+  if (step.kind === "token_budget") {
+    const selected = new Set((answer as { selectedIds?: string[] }).selectedIds ?? []);
+    const total = [...selected].reduce(
+      (sum, id) => sum + (step.prompt.items?.find((item) => item.id === id)?.weight ?? 0),
+      0,
+    );
+    return [
+      { label: "Add at least one useful fact", met: selected.size > 0 },
+      { label: `Stay within ${step.prompt.budget ?? 0} context points`, met: total <= (step.prompt.budget ?? 0) },
+    ];
+  }
+
+  if (step.kind === "ordering") {
+    const count = (answer as { order?: string[] }).order?.length ?? 0;
+    return [{ label: "Place every stage in the sequence", met: count === (step.prompt.items?.length ?? 0) }];
+  }
+
+  if (step.kind === "matching") {
+    const pairs = (answer as { pairs?: Record<string, string> }).pairs ?? {};
+    return [{ label: "Give every item one match", met: Object.keys(pairs).length === (step.prompt.items?.length ?? 0) }];
+  }
+
+  const value = (answer as { text?: string }).text?.trim() ?? "";
+  if (step.kind === "json_debugger") {
+    let valid = false;
+    try {
+      JSON.parse(value);
+      valid = true;
+    } catch {
+      valid = false;
+    }
+    return [
+      { label: "Edit the starter", met: value !== (step.prompt.starter ?? "").trim() },
+      { label: "JSON parses without syntax errors", met: valid },
+    ];
+  }
+
+  return [{ label: "Edit the working draft", met: value !== (step.prompt.starter ?? "").trim() }];
+}
+
+function getQuestionCues(step: ClientLessonStep): SpeechCue[] {
+  const cues: SpeechCue[] = [
+    { id: "title", text: `Step ${step.order}. ${step.title}.` },
+    { id: "stem", text: step.prompt.stem },
+    { id: "instruction", text: step.prompt.instruction },
   ];
   const choices = step.prompt.choices ?? step.prompt.items ?? [];
   if (choices.length > 0) {
-    pieces.push(
-      `Options. ${choices
-        .map((choice, index) => `${index + 1}. ${choice.label}`)
-        .join(". ")}.`,
+    cues.push(
+      ...choices.map((choice, index) => ({
+        id: `choice-${choice.id}`,
+        text: `${index + 1}. ${choice.label}.`,
+      })),
     );
   }
   if (step.prompt.targets?.length) {
-    pieces.push(
-      `Match targets. ${step.prompt.targets
-        .map((target) => target.label)
-        .join(". ")}.`,
+    cues.push(
+      ...step.prompt.targets.map((target) => ({
+        id: `target-${target.id}`,
+        text: `Match target. ${target.label}.`,
+      })),
     );
   }
   if (step.prompt.starter && (step.kind === "markdown_editor" || step.kind === "json_debugger")) {
-    pieces.push(`Starter text. ${step.prompt.starter}`);
+    cues.push({ id: "editor", text: `Starter text. ${step.prompt.starter}` });
   }
-  return pieces.filter(Boolean).join(" ");
+  return cues.filter((cue) => Boolean(cue.text));
 }
 
-function getResultSpeech(result: AttemptResult) {
+function getResultSpeechCues(result: AttemptResult): SpeechCue[] {
   if (result.correct) {
-    const xp = result.progress.xpAwarded
-      ? `You earned ${result.progress.xpAwarded} XP.`
-      : "";
-    return `Correct. Nice work. ${result.feedback.title}. ${result.feedback.body} ${xp}`;
+    const xp = result.progress.xpAwarded ? `You earned ${result.progress.xpAwarded} XP.` : "";
+    return [
+      { id: "feedback-title", text: `Correct. Nice work. ${result.feedback.title}.` },
+      { id: "feedback-body", text: `${result.feedback.body} ${xp}` },
+    ];
   }
-
-  return `Not quite yet. ${result.feedback.title}. Here is the cue. ${result.feedback.body}`;
+  return [
+    { id: "feedback-title", text: `Not quite yet. ${result.feedback.title}.` },
+    { id: "feedback-body", text: `Here is the cue. ${result.feedback.body}` },
+  ];
 }
 
 function defaultAnswer(step: ClientLessonStep): unknown {
@@ -288,25 +521,41 @@ function Renderer({
   answer,
   setAnswer,
   disabled,
+  onImmediateSubmit,
+  busy,
+  activeSpeechCue,
 }: {
   step: ClientLessonStep;
   answer: unknown;
   setAnswer: (answer: unknown) => void;
   disabled: boolean;
+  onImmediateSubmit: (answer: unknown) => void;
+  busy: boolean;
+  activeSpeechCue: string | null;
 }) {
   if (step.kind === "single_choice") {
     const selected = (answer as { selectedId?: string }).selectedId ?? "";
     return (
-      <div className="grid gap-3" role="radiogroup" aria-label={step.prompt.instruction}>
-        {step.prompt.choices?.map((choice) => (
+      <div className="lesson-choice-grid" role="radiogroup" aria-label={step.prompt.instruction}>
+        {step.prompt.choices?.map((choice, index) => (
           <button
             key={choice.id}
-            className={`answer-option ${selected === choice.id ? "answer-option-selected" : ""}`}
-            onClick={() => setAnswer({ selectedId: choice.id })}
-            disabled={disabled}
+            className={`${selected === choice.id ? "is-selected" : ""} ${activeSpeechCue === `choice-${choice.id}` ? "is-being-read" : ""}`}
+            onClick={() => {
+              const nextAnswer = { selectedId: choice.id };
+              setAnswer(nextAnswer);
+              onImmediateSubmit(nextAnswer);
+            }}
+            disabled={disabled || busy}
             type="button"
+            role="radio"
+            aria-checked={selected === choice.id}
           >
-            {choice.label}
+            <span className="lesson-choice-key">{index + 1}</span>
+            <span>{choice.label}</span>
+            <span className="lesson-choice-state">
+              {selected === choice.id ? <Check size={17} /> : <Circle size={16} />}
+            </span>
           </button>
         ))}
       </div>
@@ -316,36 +565,49 @@ function Renderer({
   if (step.kind === "multi_select" || step.kind === "token_budget") {
     const selected = new Set((answer as { selectedIds?: string[] }).selectedIds ?? []);
     const total = step.prompt.items
-      ? [...selected].reduce((sum, id) => sum + (step.prompt.items?.find((item) => item.id === id)?.weight ?? 0), 0)
+      ? [...selected].reduce(
+          (sum, id) => sum + (step.prompt.items?.find((item) => item.id === id)?.weight ?? 0),
+          0,
+        )
       : 0;
     const options = step.prompt.choices ?? step.prompt.items ?? [];
     return (
-      <div className="grid gap-3">
+      <div className="lesson-select-builder">
         {step.prompt.budget ? (
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3 text-sm font-semibold">
-            Budget used: {total}/{step.prompt.budget}
+          <div className={`lesson-budget-meter ${total > step.prompt.budget ? "is-over" : ""}`}>
+            <div>
+              <span>Context tray</span>
+              <strong>{total} / {step.prompt.budget}</strong>
+            </div>
+            <div className="lesson-budget-track">
+              <span style={{ width: `${Math.min(100, (total / step.prompt.budget) * 100)}%` }} />
+            </div>
           </div>
         ) : null}
-        {options.map((choice) => (
-          <label key={choice.id} className="answer-option cursor-pointer">
-            <input
-              className="h-5 w-5 accent-[var(--indigo)]"
-              type="checkbox"
-              checked={selected.has(choice.id)}
-              disabled={disabled}
-              onChange={() => {
-                const next = new Set(selected);
-                if (next.has(choice.id)) next.delete(choice.id);
-                else next.add(choice.id);
-                setAnswer({ selectedIds: [...next] });
-              }}
-            />
-            <span>{choice.label}</span>
-            {"weight" in choice && choice.weight ? (
-              <span className="ml-auto text-sm text-[var(--muted)]">{choice.weight} pts</span>
-            ) : null}
-          </label>
-        ))}
+        <div className="lesson-select-grid">
+          {options.map((choice) => {
+            const active = selected.has(choice.id);
+            return (
+              <button
+                key={choice.id}
+                className={`${active ? "is-selected" : ""} ${activeSpeechCue === `choice-${choice.id}` ? "is-being-read" : ""}`}
+                type="button"
+                disabled={disabled}
+                aria-pressed={active}
+                onClick={() => {
+                  const next = new Set(selected);
+                  if (next.has(choice.id)) next.delete(choice.id);
+                  else next.add(choice.id);
+                  setAnswer({ selectedIds: [...next] });
+                }}
+              >
+                <span className="lesson-select-toggle">{active ? <Minus size={17} /> : <Plus size={17} />}</span>
+                <span>{choice.label}</span>
+                {"weight" in choice && choice.weight ? <small>{choice.weight} pts</small> : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -362,19 +624,20 @@ function Renderer({
       setAnswer({ order: next });
     };
     return (
-      <ol className="grid gap-3">
+      <ol className="lesson-order-list">
         {order.map((id, index) => (
-          <li key={id} className="answer-option">
-            <span className="grid h-8 w-8 place-items-center rounded-md bg-[var(--paper)] font-mono text-sm">
-              {index + 1}
-            </span>
-            <span className="flex-1">{labelFor(id)}</span>
-            <button className="icon-pill" onClick={() => move(index, -1)} disabled={disabled || index === 0} type="button" aria-label="Move up">
-              <ChevronUp size={17} />
-            </button>
-            <button className="icon-pill" onClick={() => move(index, 1)} disabled={disabled || index === order.length - 1} type="button" aria-label="Move down">
-              <ChevronDown size={17} />
-            </button>
+          <li className={activeSpeechCue === `choice-${id}` ? "is-being-read" : ""} key={id}>
+            <GripVertical className="lesson-grip" size={18} />
+            <span className="lesson-order-number">{index + 1}</span>
+            <span className="lesson-order-label">{labelFor(id)}</span>
+            <div>
+              <button onClick={() => move(index, -1)} disabled={disabled || index === 0} type="button" aria-label={`Move ${labelFor(id)} up`}>
+                <ChevronUp size={18} />
+              </button>
+              <button onClick={() => move(index, 1)} disabled={disabled || index === order.length - 1} type="button" aria-label={`Move ${labelFor(id)} down`}>
+                <ChevronDown size={18} />
+              </button>
+            </div>
           </li>
         ))}
       </ol>
@@ -384,21 +647,29 @@ function Renderer({
   if (step.kind === "matching") {
     const pairs = (answer as { pairs?: Record<string, string> }).pairs ?? {};
     return (
-      <div className="grid gap-3">
+      <div className="lesson-match-grid">
+        <div className="lesson-match-targets" aria-label="Available match targets">
+          {step.prompt.targets?.map((target) => (
+            <span
+              className={activeSpeechCue === `target-${target.id}` ? "is-being-read" : ""}
+              key={target.id}
+            >
+              {target.label}
+            </span>
+          ))}
+        </div>
         {step.prompt.items?.map((item) => (
-          <label className="field-label rounded-lg border border-[var(--line)] bg-white p-4" key={item.id}>
-            <span>{item.label}</span>
+          <label className={activeSpeechCue === `choice-${item.id}` ? "is-being-read" : ""} key={item.id}>
+            <span className="lesson-match-source">{item.label}</span>
+            <ArrowRight size={17} aria-hidden="true" />
             <select
-              className="field-input"
               value={pairs[item.id] ?? ""}
               disabled={disabled}
               onChange={(event) => setAnswer({ pairs: { ...pairs, [item.id]: event.target.value } })}
             >
               <option value="">Choose a match</option>
               {step.prompt.targets?.map((target) => (
-                <option key={target.id} value={target.id}>
-                  {target.label}
-                </option>
+                <option key={target.id} value={target.id}>{target.label}</option>
               ))}
             </select>
           </label>
@@ -407,7 +678,15 @@ function Renderer({
     );
   }
 
-  return <EditorRenderer step={step} answer={answer} setAnswer={setAnswer} disabled={disabled} />;
+  return (
+    <EditorRenderer
+      step={step}
+      answer={answer}
+      setAnswer={setAnswer}
+      disabled={disabled}
+      activeSpeechCue={activeSpeechCue}
+    />
+  );
 }
 
 function EditorRenderer({
@@ -415,11 +694,13 @@ function EditorRenderer({
   answer,
   setAnswer,
   disabled,
+  activeSpeechCue,
 }: {
   step: ClientLessonStep;
   answer: unknown;
   setAnswer: (answer: unknown) => void;
   disabled: boolean;
+  activeSpeechCue: string | null;
 }) {
   const value = (answer as { text?: string }).text ?? "";
   const jsonStatus = useMemo(() => {
@@ -433,29 +714,30 @@ function EditorRenderer({
   }, [step.kind, value]);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <label className="field-label">
-        {step.prompt.instruction}
+    <div className={`lesson-editor-grid ${activeSpeechCue === "editor" ? "is-being-read" : ""}`}>
+      <label>
+        <span>Editor</span>
         <textarea
-          className="field-input min-h-64 font-mono text-sm leading-7"
           value={value}
           placeholder={step.prompt.placeholder}
           disabled={disabled}
           onChange={(event) => setAnswer({ text: event.target.value })}
+          spellCheck={step.kind === "prompt_builder"}
         />
       </label>
-      <div className="rounded-lg border border-[var(--line)] bg-white p-4">
-        <p className="mb-3 text-sm font-semibold text-[var(--muted)]">
-          {step.kind === "json_debugger" ? jsonStatus : "Preview"}
-        </p>
+      <div className="lesson-preview-panel">
+        <div className="lesson-preview-heading">
+          <span>{step.kind === "json_debugger" ? "Parser" : "Live preview"}</span>
+          {step.kind === "json_debugger" ? (
+            <small className={jsonStatus === "Valid JSON" ? "is-valid" : ""}>{jsonStatus}</small>
+          ) : null}
+        </div>
         {step.kind === "json_debugger" ? (
-          <pre className="overflow-auto rounded-lg bg-[var(--paper)] p-4 font-mono text-sm">
-            {value}
-          </pre>
+          <pre>{value}</pre>
         ) : step.kind === "prompt_builder" ? (
-          <p className="whitespace-pre-wrap text-sm leading-7 text-[var(--muted)]">{value}</p>
+          <p className="lesson-prompt-preview">{value || "Your prompt will appear here."}</p>
         ) : (
-          <div className="prose prose-sm max-w-none">
+          <div className="lesson-prose">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
           </div>
         )}
@@ -468,35 +750,35 @@ function FeedbackBox({
   feedback,
   tone,
   xp,
+  activeSpeechCue,
 }: {
   feedback: Feedback;
   tone: "success" | "error";
   xp?: number;
+  activeSpeechCue: string | null;
 }) {
   return (
-    <div className={`mt-6 rounded-lg border p-4 ${tone === "success" ? "border-green-200 bg-green-50 text-green-900" : "border-red-200 bg-red-50 text-red-900"}`}>
-      <div className="flex items-start gap-3">
-        {tone === "success" ? <Check size={20} /> : <ArrowLeft size={20} />}
-        <div>
-          <p className="font-semibold">{feedback.title}</p>
-          <p className="mt-1 text-sm leading-6">{feedback.body}</p>
-          {xp ? <p className="mt-2 text-sm font-semibold">+{xp} XP</p> : null}
-        </div>
+    <div className={`lesson-feedback ${tone === "success" ? "is-success" : "is-error"}`}>
+      <span className="lesson-feedback-icon">
+        {tone === "success" ? <Check size={19} /> : <Lightbulb size={19} />}
+      </span>
+      <div>
+        <strong className={activeSpeechCue === "feedback-title" ? "is-being-read" : ""}>{feedback.title}</strong>
+        <p className={activeSpeechCue === "feedback-body" ? "is-being-read" : ""}>{feedback.body}</p>
+        {xp ? <small>+{xp} XP</small> : null}
       </div>
     </div>
   );
 }
 
-function CoachBox({ coach }: { coach: Coach }) {
+function CoachBox({ coach, activeSpeechCue }: { coach: Coach; activeSpeechCue: string | null }) {
   return (
-    <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950">
-      <div className="flex items-start gap-3">
-        <Sparkles size={20} />
-        <div>
-          <p className="font-semibold">Conceptly Coach</p>
-          <p className="mt-1 text-sm leading-6">{coach.explanation}</p>
-          <p className="mt-3 text-sm font-semibold">{coach.guidingQuestion}</p>
-        </div>
+    <div className="lesson-coach-card">
+      <Sparkles size={18} />
+      <div>
+        <strong>Conceptly Coach</strong>
+        <p className={activeSpeechCue === "coach-explanation" ? "is-being-read" : ""}>{coach.explanation}</p>
+        <span className={activeSpeechCue === "coach-question" ? "is-being-read" : ""}>{coach.guidingQuestion}</span>
       </div>
     </div>
   );

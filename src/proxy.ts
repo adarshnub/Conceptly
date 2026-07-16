@@ -31,7 +31,7 @@ export const config = {
   matcher: [
     "/learn/:path*",
     "/course/:path*",
-    "/settings",
+    "/settings/:path*",
     "/sign-in",
     "/sign-up",
   ],

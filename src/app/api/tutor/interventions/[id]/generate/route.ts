@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { pool } from "@/db";
+import { estimateTextCostMicrousd, normalizeResponseUsage } from "@/lib/ai-pricing";
+import { recordAiUsage } from "@/lib/ai-usage";
 import { getStepById } from "@/lib/content/course";
 import { hashedSafetyIdentifier } from "@/lib/learning";
 import { getEnv } from "@/lib/env";
@@ -32,6 +34,7 @@ function safeCoachText(value: unknown) {
 }
 
 export async function POST(_request: Request, context: { params: Params }) {
+  const requestStartedAt = Date.now();
   const session = await getCurrentSession();
   if (!session?.user) {
     return NextResponse.json({ error: { message: "Sign in required." } }, { status: 401 });
@@ -73,6 +76,14 @@ export async function POST(_request: Request, context: { params: Params }) {
        where id = $1`,
       [id, JSON.stringify(fallback)],
     );
+    await recordAiUsage({
+      userId: session.user.id,
+      feature: "coach",
+      status: "skipped",
+      model: env.OPENAI_MODEL,
+      latencyMs: Date.now() - requestStartedAt,
+      metadata: { reason: "missing_api_key", stepId: row.step_id },
+    });
     return NextResponse.json(fallback);
   }
 
@@ -136,12 +147,24 @@ export async function POST(_request: Request, context: { params: Params }) {
     );
 
     const output = safeCoachText(JSON.parse(response.output_text || "{}"));
+    const normalizedUsage = normalizeResponseUsage(response.usage);
     await pool.query(
       `update conceptly_private.tutor_interventions
        set status = 'generated', response = $2::jsonb, token_usage = $3::jsonb
        where id = $1`,
       [id, JSON.stringify(output), JSON.stringify(response.usage ?? null)],
     );
+    await recordAiUsage({
+      userId: session.user.id,
+      feature: "coach",
+      status: "succeeded",
+      model: env.OPENAI_MODEL,
+      ...normalizedUsage,
+      estimatedCostMicrousd: estimateTextCostMicrousd(env.OPENAI_MODEL, response.usage),
+      latencyMs: Date.now() - requestStartedAt,
+      requestId: response.id,
+      metadata: { stepId: row.step_id, interventionId: id },
+    });
 
     return NextResponse.json(output);
   } catch {
@@ -151,6 +174,14 @@ export async function POST(_request: Request, context: { params: Params }) {
        where id = $1`,
       [id, JSON.stringify(fallback)],
     );
+    await recordAiUsage({
+      userId: session.user.id,
+      feature: "coach",
+      status: "failed",
+      model: env.OPENAI_MODEL,
+      latencyMs: Date.now() - requestStartedAt,
+      metadata: { stepId: row.step_id, interventionId: id },
+    });
     return NextResponse.json(fallback);
   }
 }
